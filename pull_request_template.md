@@ -2,7 +2,7 @@
 
 Please explain the changes you've made. Try to be explicit and try to capture the changes in a few short, concise sentences.
 
-**Asana**: (Asana URL)
+**Jira**: (Jira URL)
 
 ## Why
 
