@@ -1,0 +1,38 @@
+name: Auto Label PRs
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  auto-label:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Add Labels Based on Branch Name
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const branchName = context.payload.pull_request.head.ref;
+            const labels = [];
+            if (branchName.startsWith("feature/")) {
+              labels.push("feature");
+            } else if (branchName.startsWith("bugfix/")) {
+              labels.push("bugfix");
+            } else if (branchName.startsWith("hotfix/")) {
+              labels.push("hotfix");
+            } else if (branchName.startsWith("chore/")) {
+              labels.push("chore");
+            }
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                labels: labels,
+              });
+            }
