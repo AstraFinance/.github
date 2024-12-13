@@ -1,8 +1,10 @@
 name: Auto Label PRs
 
 on:
-  pull_request:
-    types: [opened, synchronize]
+  workflow_call:
+    secrets:
+      github_token:
+        required: true
 
 jobs:
   auto-label:
@@ -15,7 +17,7 @@ jobs:
       - name: Add Labels Based on Branch Name
         uses: actions/github-script@v6
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.github_token }}
           script: |
             const branchName = context.payload.pull_request.head.ref;
             const labels = [];
