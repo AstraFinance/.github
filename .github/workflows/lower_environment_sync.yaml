@@ -2,13 +2,23 @@ name: Lower Environment Sync
 
 on:
   workflow_call:
+    inputs:
+      environments:
+        description: "List of lower environments to sync (space delimited)"
+        required: true
+        type: string
+      default_branch:
+        description: "The default branch to run this workflow on"
+        required: false
+        type: string
+        default: "master"
     secrets:
       custom_token:
         required: true
 
 jobs:
   sync-lower-environments:
-    if: github.ref == 'refs/heads/master'
+    if: ${{ github.ref == format('refs/heads/{0}', inputs.default_branch) }}
     runs-on: ubuntu-latest
 
     steps:
@@ -27,17 +37,17 @@ jobs:
           GH_TOKEN: ${{ secrets.custom_token }}
         run: |
           # Define environments to process
-          ENVIRONMENTS="develop release sandbox"
+          ENVIRONMENTS="${{ inputs.environments }}"
           for env in $ENVIRONMENTS; do
             echo "Processing environment: $env"
             # Step 1: Ensure the remote branch is fetched
             git fetch origin $env:$env || echo "Branch $env does not exist on remote."
             
             # Step 2: Create or reset the new branch from master
-            branch_name="master-$env"
-            git checkout -B $branch_name master
+            branch_name="${{ inputs.default_branch }}-$env"
+            git checkout -B $branch_name ${{ inputs.default_branch }}
             echo "Created branch $branch_name"
-            # Step 3: Merge the lower environment branch into master-{env}
+            # Step 3: Merge the lower environment branch into default_branch-{env}
             git merge --no-edit origin/$env || echo "Conflicts encountered while merging $env into $branch_name"
             
             # Step 4: Push the branch to remote
