@@ -1,0 +1,50 @@
+name: Lower Environment Sync
+
+on:
+  workflow_call:
+    secrets:
+      custom_token:
+        required: true
+
+jobs:
+  sync-lower-environments:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Fetch all branches
+        run: git fetch --all --tags --unshallow --prune
+
+      - name: Automate lower environment sync
+        env:
+          GH_TOKEN: ${{ secrets.custom_token }}
+        run: |
+          # Define environments to process
+          ENVIRONMENTS="develop release sandbox"
+          for env in $ENVIRONMENTS; do
+            echo "Processing environment: $env"
+            # Step 1: Ensure the remote branch is fetched
+            git fetch origin $env:$env || echo "Branch $env does not exist on remote."
+            
+            # Step 2: Create or reset the new branch from master
+            branch_name="master-$env"
+            git checkout -B $branch_name master
+            echo "Created branch $branch_name"
+            # Step 3: Merge the lower environment branch into master-{env}
+            git merge --no-edit origin/$env || echo "Conflicts encountered while merging $env into $branch_name"
+            
+            # Step 4: Push the branch to remote
+            git push origin $branch_name --force
+            echo "Merged $env into $branch_name and pushed"
+            # Step 5: Create a Pull Request to merge back into $env
+            pr_title="Sync $branch_name back into $env"
+            pr_body="This PR merges changes from $branch_name back into $env after syncing from master. Resolve conflicts if any."
+            gh pr create --base $env --head $branch_name --title "$pr_title" --body "$pr_body" || echo "PR creation failed for $branch_name -> $env"
+          done
