@@ -1,0 +1,48 @@
+name: Validate Jira Tasks
+
+on:
+  workflow_call:
+    inputs:
+      jira_project:
+        required: true
+        type: string
+    secrets:
+      ci_github_token:
+        required: true
+      ci_jira_user:
+        required: true
+      ci_jira_api_token:
+        required: true
+      ci_jira_domain:
+        required: true
+
+jobs:
+  validate-jira-tasks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run Jira/GitHub PR Validation
+        run: python ${{ github.workspace }}/scripts/compare_jira_github.py
+        env:
+          GITHUB_TOKEN: ${{ secrets.ci_github_token }}
+          GITHUB_REPO: ${{ github.repository }}
+          GITHUB_PR: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD: ${{ github.event.pull_request.head.ref }}
+
+          CI_JIRA_USER: ${{ secrets.ci_jira_user }}
+          CI_JIRA_API_TOKEN: ${{ secrets.ci_jira_api_token }}
+          CI_JIRA_DOMAIN: ${{ secrets.ci_jira_domain }}
+          JIRA_PROJECT: ${{ inputs.jira_project }}
