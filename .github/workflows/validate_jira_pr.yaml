@@ -28,7 +28,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: AstraFinance/.github
-          path: .github-shared  # avoid name collision
+          path: .github-shared
+          token: ${{ secrets.CI_CHECKOUT_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -47,7 +48,6 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BASE: ${{ github.event.pull_request.base.ref }}
           PR_HEAD: ${{ github.event.pull_request.head.ref }}
-
           CI_JIRA_USER: ${{ secrets.ci_jira_user }}
           CI_JIRA_API_TOKEN: ${{ secrets.ci_jira_api_token }}
           CI_JIRA_DOMAIN: ${{ secrets.ci_jira_domain }}
