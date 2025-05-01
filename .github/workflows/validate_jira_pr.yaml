@@ -31,7 +31,7 @@ jobs:
         with:
           repository: AstraFinance/.github
           path: .github-shared
-          token: ${{ secrets.CI_CHECKOUT_TOKEN }}
+          token: ${{ secrets.ci_checkout_token }}
 
       - name: Set up Python
         uses: actions/setup-python@v4
