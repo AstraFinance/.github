@@ -42,7 +42,7 @@ jobs:
         run: pip install requests
 
       - name: Run Jira/GitHub PR Validation
-        run: python .github-shared/scripts/compare_jira_github.py
+        run: python .github-shared/.github/scripts/compare_jira_github.py
         env:
           GITHUB_TOKEN: ${{ secrets.ci_github_token }}
           GITHUB_REPO: ${{ github.repository }}
