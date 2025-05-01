@@ -4,7 +4,7 @@ import requests
 import sys
 
 def is_allowed_target_branch(base):
-    return base in ["release", "sandbox", "master"]
+    return base in ["release", "sandbox", "master", "test-release"]
 
 def infer_jira_fixversion():
     sources = {
