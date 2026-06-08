@@ -1,4 +1,4 @@
-<!-- PR title must be: 'AF-1234: Ticket Title' -->
+<!-- PR title must be: 'eng-1234: Ticket Title' -->
 
 ## Summary
 What does this change do?
@@ -6,7 +6,7 @@ What does this change do?
 ## Why
 Why is this change needed? What problem does it solve?
 
-**Jira:** [AF-XXXX](https://astrafinance.atlassian.net/browse/AF-XXXX)
+**Linear:** [eng-XXXX](eng-xxxx)
 
 ## Rollout Considerations (if applicable)
 - Feature flag / rollout plan:
