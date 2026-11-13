@@ -153,6 +153,10 @@ def build_plan(
         reason = None
         if other:
             reason = (f"already in {other.name}", False)
+        elif p.state_type in ("canceled", "duplicate"):
+            # Work shipped under a story nobody intends to deliver: announcing
+            # it would tell clients about something that was called off.
+            reason = (f"{p.state}, so not released", True)
         elif p.parent:
             reason = ("is itself a sub-issue", False)
         elif kids:

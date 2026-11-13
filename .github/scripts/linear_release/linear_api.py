@@ -30,7 +30,7 @@ query FetchTickets($teamKey: String!, $numbers: [Float!]!) {
       parent { identifier }
       labels(first: 50) { nodes { name } }
       children(first: 100) { nodes { identifier state { name type } } }
-      releases(first: 50) { nodes { id name url stage { type } } }
+      releases(first: 50, includeArchived: true) { nodes { id name url stage { type } } }
     }
   }
 }
@@ -54,7 +54,7 @@ query FetchPipeline($name: String!) {
 
 FIND_OWN_RELEASE_GQL = """
 query FindOwnRelease($pipelineId: ID!, $version: String!) {
-  releases(filter: {pipeline: {id: {eq: $pipelineId}}, version: {eq: $version}}, first: 50) {
+  releases(filter: {pipeline: {id: {eq: $pipelineId}}, version: {eq: $version}}, first: 50, includeArchived: true) {
     nodes { id name url description stage { type } }
   }
 }
@@ -193,11 +193,25 @@ class LinearClient:
         return Pipeline(node["id"], node["name"], started, completed)
 
     def find_own_release(self, pipeline_id: str, version: str, marker: str) -> tuple[ReleaseRef, bool] | None:
+        """This deploy's release in the pipeline, if an earlier run made it.
+
+        Linear keeps a version unique within a pipeline, archived releases
+        included, so a release holding the version that this workflow did not
+        make would make every create fail; the run stops here instead, before
+        anything changes.
+        """
         data = self._run("FindOwnRelease", FIND_OWN_RELEASE_GQL, {"pipelineId": pipeline_id, "version": version})
-        for node in data["releases"]["nodes"]:
+        nodes = data["releases"]["nodes"]
+        for node in nodes:
             if (node.get("description") or "").startswith(marker):
                 ref = ReleaseRef(node["id"], node["name"], node["url"])
                 return ref, node["stage"]["type"] == "completed"
+        if nodes:
+            raise LinearError(
+                f"FindOwnRelease: release {nodes[0]['name']!r} already uses version {version!r} in this "
+                f"pipeline but was not made by this workflow for {marker!r}. Change that release's "
+                f"version in Linear, then run again."
+            )
         return None
 
     def release_names(self, pipeline_id: str, base_name: str) -> list[str]:
@@ -279,4 +293,5 @@ def _ticket(node: dict) -> Ticket:
             for r in node["releases"]["nodes"]
             if r["stage"]["type"] == "completed"
         ),
+        release_ids=frozenset(r["id"] for r in node["releases"]["nodes"]),
     )

@@ -14,6 +14,7 @@ def ticket(
     parent: str | None = None,
     children: tuple[Child, ...] = (),
     completed_releases: tuple[ReleaseRef, ...] = (),
+    release_ids: frozenset[str] | None = None,
 ) -> Ticket:
     return Ticket(
         identifier=identifier,
@@ -26,6 +27,7 @@ def ticket(
         parent=parent,
         children=children,
         completed_releases=completed_releases,
+        release_ids=release_ids if release_ids is not None else frozenset(r.id for r in completed_releases),
     )
 
 

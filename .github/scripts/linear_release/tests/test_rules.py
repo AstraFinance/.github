@@ -207,3 +207,17 @@ def test_releases_and_moves_are_ordered_by_ticket_number():
     )
     assert ids(plan.releases["astra"]) == ["ENG-9", "ENG-100"]
     assert [m.ticket.identifier for m in plan.moves] == ["ENG-9", "ENG-100"]
+
+
+def test_canceled_parent_is_not_released_when_its_last_sub_issue_ships():
+    """Given a canceled story whose last open sub-issue ships,
+    When the plan is built,
+    Then the story is neither released nor moved, and is flagged."""
+    parent = ticket(
+        "ENG-70", "immediate", "story", state="Canceled", state_type="canceled",
+        children=(child("ENG-71", "Ready for Deployment"),),
+    )
+    plan = build_plan([ticket("ENG-71", "immediate", parent="ENG-70")], {"ENG-70": parent}, CFG)
+    assert plan.releases == {}
+    assert "ENG-70" not in moves(plan)
+    assert note(plan, "ENG-70") == Note("ENG-70", "Canceled, so not released", attention=True)

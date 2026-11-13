@@ -122,7 +122,7 @@ def apply_plan(
     if not ctx.dry_run:
         for target in targets:
             for t in plan.releases[target.audience]:
-                if target.ref.id not in {r.id for r in t.completed_releases}:
+                if target.ref.id not in t.release_ids:
                     client.attach(t.uuid, target.ref.id)
 
         if plan.moves:
@@ -169,7 +169,12 @@ def _await_notes(client, cfg, ctx, targets, sleep) -> dict[Audience, tuple[str, 
     rounds = max(1, cfg.notes_timeout_s // cfg.notes_interval_s)
     for round_number in range(rounds):
         for target in list(waiting):
-            state, content = client.notes_status(target.ref.id)
+            try:
+                state, content = client.notes_status(target.ref.id)
+            except (LinearError, OSError):
+                # Linear already holds the finished release; a failed read only
+                # means the deployer copies the notes from Linear instead.
+                state, content = "pending", None
             status[target.audience] = (state, content)
             if state == "completed":
                 waiting.remove(target)

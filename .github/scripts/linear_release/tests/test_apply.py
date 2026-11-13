@@ -1,7 +1,10 @@
 from dataclasses import replace
 from datetime import date
 
+import pytest
+
 from linear_release.apply import Context, apply_plan, find_own_releases, release_name
+from linear_release.linear_api import LinearError
 from linear_release.model import ReleaseRef
 from linear_release.rules import build_plan
 
@@ -158,3 +161,36 @@ def test_find_own_releases_checks_both_pipelines_with_the_marker():
     assert found == {"internal": (own_ref, True)}
     searched = [args for name, args in fake.calls if name == "find_own_release"]
     assert searched == [("p-Astra", "1.192.0", "Delta 1.192.0"), ("p-Internal Tooling", "1.192.0", "Delta 1.192.0")]
+
+
+@pytest.mark.parametrize("error", [LinearError("NotesStatus: boom"), TimeoutError("read timed out")])
+def test_notes_errors_never_fail_a_run_that_already_changed_linear(error):
+    """Given the release is created, filled and completed but reading its notes fails,
+    When the plan is applied,
+    Then the run still returns an outcome with the notes reported as pending."""
+
+    class FailingNotes(FakeLinear):
+        def notes_status(self, release_id):
+            self._log("notes_status", release_id)
+            raise error
+
+    fake = FailingNotes()
+    outcome = apply_plan(_plan(ticket("ENG-1", "immediate", "bug")), fake, CFG, CTX, own={}, sleep=lambda s: None)
+
+    assert "complete_release" in fake.names()
+    assert outcome.releases[0].notes_status == "pending"
+    assert outcome.releases[0].notes is None
+
+
+def test_rerun_into_a_started_release_does_not_attach_tickets_twice():
+    """Given an earlier run created this deploy's release and attached ENG-1, then failed before completing it,
+    When the run is repeated,
+    Then ENG-1 is not attached again and only the new ticket is."""
+    own_ref = ReleaseRef("own-2", "Astra 2026.11.13", "u")
+    attached = ticket("ENG-1", "immediate", "bug", release_ids=frozenset({"own-2"}))
+    fake = FakeLinear()
+
+    apply_plan(_plan(attached, ticket("ENG-2", "immediate", "bug")), fake, CFG, CTX,
+               own={"astra": (own_ref, False)}, sleep=lambda s: None)
+
+    assert [args for name, args in fake.calls if name == "attach"] == [("uuid-ENG-2", "own-2")]

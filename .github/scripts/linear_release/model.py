@@ -33,6 +33,8 @@ class Ticket:
     parent: str | None
     children: tuple[Child, ...]
     completed_releases: tuple[ReleaseRef, ...]
+    # Every release the ticket is attached to, in any stage, so a re-run does not attach it twice.
+    release_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

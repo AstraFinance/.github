@@ -55,6 +55,16 @@ def test_fetch_tickets_maps_labels_parent_children_and_completed_releases():
     assert t.state == "Ready for Deployment" and t.state_type == "started"
     assert t.children == (Child("ENG-9", "Todo", "unstarted"),)
     assert t.completed_releases == (ReleaseRef("r1", "Astra 2026.11.12", "u1"),)
+    assert t.release_ids == frozenset({"r1", "r2"})
+
+
+def test_fetch_tickets_includes_archived_releases():
+    """Given releases can be archived after they complete,
+    When tickets are fetched,
+    Then archived releases still count toward a ticket's releases."""
+    post = FakePost({"data": {"issues": {"nodes": []}}})
+    LinearClient(API_KEY, post=post).fetch_tickets("ENG", ["ENG-1"])
+    assert "releases(first: 50, includeArchived: true)" in post.requests[0]["body"]["query"]
 
 
 def test_fetch_tickets_chunks_by_100():
@@ -92,17 +102,29 @@ def test_requests_send_the_key_as_authorization():
     assert API_KEY not in json.dumps(post.requests[0]["body"])
 
 
-def test_find_own_release_requires_marker_prefix():
-    """Given two releases share a version but only one was made for this service and tag,
+def test_find_own_release_matches_the_marker():
+    """Given the pipeline's release for this version was made by this workflow for this deploy,
     When this run's own release is looked up,
-    Then only the one whose description starts with the marker matches."""
+    Then it is returned with whether it is already completed."""
     post = FakePost({"data": {"releases": {"nodes": [
-        {"id": "a", "name": "1.18.0", "url": "ua", "description": "Delta 1.18.0", "stage": {"type": "completed"}},
         {"id": "b", "name": "Astra 2026.11.04.2", "url": "ub",
          "description": "Helios v1.18.0\n\ncompare", "stage": {"type": "completed"}},
     ]}}})
     found = LinearClient(API_KEY, post=post).find_own_release("p1", "v1.18.0", "Helios v1.18.0")
     assert found == (ReleaseRef("b", "Astra 2026.11.04.2", "ub"), True)
+    assert "includeArchived: true" in post.requests[0]["body"]["query"]
+
+
+def test_find_own_release_stops_when_another_release_holds_the_version():
+    """Given a release this workflow did not make already uses the deploy's version, which Linear keeps unique per pipeline,
+    When this run's own release is looked up,
+    Then the run stops before changing anything, naming the release and the version."""
+    post = FakePost({"data": {"releases": {"nodes": [
+        {"id": "a", "name": "Astra 2026.11.13", "url": "ua", "description": None, "stage": {"type": "started"}},
+    ]}}})
+    with pytest.raises(LinearError) as excinfo:
+        LinearClient(API_KEY, post=post).find_own_release("p1", "1.192.0", "Delta 1.192.0")
+    assert "Astra 2026.11.13" in str(excinfo.value) and "1.192.0" in str(excinfo.value)
 
 
 def test_find_own_release_returns_none_without_match():
