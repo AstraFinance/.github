@@ -1,0 +1,80 @@
+name: Linear release
+
+# Turns a deployed production tag into Linear releases, ticket status moves
+# and a run summary to paste into #releases. Called from each service repo's
+# own workflow; the rules live in .github/scripts/linear_release.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Deployed production tag.
+        required: true
+        type: string
+      previous_tag:
+        description: Previous production tag. Defaults to the highest earlier tag.
+        required: false
+        type: string
+        default: ""
+      service:
+        description: Service name written into the release description, Delta or Helios.
+        required: true
+        type: string
+      dry_run:
+        description: Report only. Change nothing in Linear.
+        required: false
+        type: boolean
+        default: true
+      scripts_ref:
+        description: Ref of AstraFinance/.github to run the scripts from.
+        required: false
+        type: string
+        default: main
+    secrets:
+      linear_api_key:
+        required: true
+
+jobs:
+  linear-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    # One run per repository at a time, so two runs can't both create a release for the same day.
+    concurrency:
+      group: linear-release-${{ github.repository }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Check out the deployed repository with its tags
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Check out the shared scripts
+        uses: actions/checkout@v6
+        with:
+          repository: AstraFinance/.github
+          ref: ${{ inputs.scripts_ref }}
+          path: .github-shared
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Create the Linear release
+        working-directory: .github-shared/.github/scripts
+        # Inputs reach the script only through the environment, never by
+        # interpolation into the command, so a tag can't inject shell.
+        env:
+          LINEAR_API_KEY: ${{ secrets.linear_api_key }}
+          TAG: ${{ inputs.tag }}
+          PREVIOUS_TAG: ${{ inputs.previous_tag }}
+          SERVICE: ${{ inputs.service }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=(--repo-dir "$GITHUB_WORKSPACE" --tag "$TAG" --service "$SERVICE" --repo "$GITHUB_REPOSITORY")
+          if [ -n "$PREVIOUS_TAG" ]; then args+=(--previous-tag "$PREVIOUS_TAG"); fi
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          python -m linear_release "${args[@]}"
