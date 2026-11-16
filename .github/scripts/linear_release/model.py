@@ -50,6 +50,9 @@ class Note:
     identifier: str
     reason: str
     attention: bool
+    # What the ticket's owner should do, and the ticket to tell them on.
+    hint: str = ""
+    uuid: str = ""
 
 
 @dataclass(frozen=True)

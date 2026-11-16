@@ -43,6 +43,11 @@ def moves(plan: Plan) -> dict[str, str]:
     return {move.ticket.identifier: move.to_state for move in plan.moves}
 
 
+def brief(n: Note) -> tuple[str, bool]:
+    """A note's reason and flag, for assertions that don't care about the hint wording."""
+    return n.reason, n.attention
+
+
 def note(plan: Plan, identifier: str) -> Note:
     matches = [n for n in plan.notes if n.identifier == identifier]
     assert len(matches) == 1, f"expected one note for {identifier}, got {matches}"

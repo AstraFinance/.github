@@ -1,14 +1,25 @@
-from linear_release.model import Note, ReleaseRef
+from linear_release.model import ReleaseRef
 from linear_release.rules import build_plan
 
-from .factories import CFG, child, ids, moves, note, ticket
+from .factories import CFG, brief, child, ids, moves, note, ticket
 
 
-def test_immediate_story_goes_to_astra_and_done():
+def test_immediate_story_goes_to_astra_and_waits_at_deployed():
     """Given an immediate top-level story ready for deployment,
     When the plan is built,
-    Then it is in the Astra release and moves to Done."""
+    Then it is in the Astra release and stops at Deployed until a person releases it."""
     plan = build_plan([ticket("ENG-1", "immediate", "story")], {}, CFG)
+    assert ids(plan.releases["astra"]) == ["ENG-1"]
+    assert moves(plan) == {"ENG-1": "Deployed"}
+
+
+def test_released_ticket_goes_to_done_when_its_release_is_already_released():
+    """Given this deploy's Astra release was already moved to Released by a person,
+    When a re-run adds a newly qualifying story,
+    Then the story goes straight to Done, since no later release event will move it."""
+    plan = build_plan(
+        [ticket("ENG-1", "immediate", "story")], {}, CFG, completed_audiences=frozenset({"astra"})
+    )
     assert ids(plan.releases["astra"]) == ["ENG-1"]
     assert moves(plan) == {"ENG-1": "Done"}
 
@@ -42,13 +53,23 @@ def test_gated_is_deployed_and_not_released():
 
 
 def test_immediate_task_is_done_but_not_released():
-    """Given an immediate task with no story or bug label,
+    """Given an immediate ticket deliberately typed as a task,
     When the plan is built,
-    Then it is finished but left out of the release, with a plain note."""
+    Then it is finished and left out of the release with a plain note."""
     plan = build_plan([ticket("ENG-4", "immediate", "task")], {}, CFG)
     assert plan.releases == {}
     assert moves(plan) == {"ENG-4": "Done"}
-    assert note(plan, "ENG-4") == Note("ENG-4", "no story or bug label", attention=False)
+    assert brief(note(plan, "ENG-4")) == ("not a story or bug", False)
+
+
+def test_immediate_ticket_without_a_type_label_is_flagged():
+    """Given an immediate top-level ticket with no type label at all,
+    When the plan is built,
+    Then it is finished but flagged, because it may be a story nobody labeled."""
+    plan = build_plan([ticket("ENG-12", "immediate", "payments-core")], {}, CFG)
+    assert plan.releases == {}
+    assert moves(plan) == {"ENG-12": "Done"}
+    assert brief(note(plan, "ENG-12")) == ("no type label", True)
 
 
 def test_bug_without_release_method_is_deployed_and_flagged():
@@ -57,16 +78,28 @@ def test_bug_without_release_method_is_deployed_and_flagged():
     Then it stops at Deployed and is flagged for attention."""
     plan = build_plan([ticket("ENG-5", "bug")], {}, CFG)
     assert moves(plan) == {"ENG-5": "Deployed"}
-    assert note(plan, "ENG-5") == Note("ENG-5", "no Release Method label", attention=True)
+    assert brief(note(plan, "ENG-5")) == ("no Release Method label", True)
 
 
-def test_untyped_ticket_without_release_method_is_done():
-    """Given a ticket with neither a type nor a Release Method label,
+def test_unlabeled_top_level_ticket_is_deployed_and_flagged():
+    """Given a top-level ticket with neither a type nor a Release Method label,
     When the plan is built,
-    Then it is finished because nothing requires it to be gated."""
+    Then it stops at Deployed and is flagged, since nothing says whether it is gated."""
     plan = build_plan([ticket("ENG-6", "dual-sponsor")], {}, CFG)
-    assert moves(plan) == {"ENG-6": "Done"}
+    assert moves(plan) == {"ENG-6": "Deployed"}
     assert plan.releases == {}
+    assert brief(note(plan, "ENG-6")) == ("no type or Release Method label", True)
+
+
+def test_unlabeled_sub_issue_is_done_without_a_flag():
+    """Given a sub-issue with no labels, which is how implementation pieces are usually filed,
+    When the plan is built,
+    Then it is finished and noted only as a sub-issue."""
+    parent = ticket("ENG-90", "immediate", "story", children=(child("ENG-91", "Ready for Deployment"),
+                                                              child("ENG-92", "Todo", "unstarted")))
+    plan = build_plan([ticket("ENG-91", parent="ENG-90")], {"ENG-90": parent}, CFG)
+    assert moves(plan) == {"ENG-91": "Done"}
+    assert brief(note(plan, "ENG-91")) == ("sub-issue of ENG-90", False)
 
 
 def test_advance_notice_is_deployed_flagged_and_not_released():
@@ -88,7 +121,17 @@ def test_ticket_not_ready_is_left_alone_and_flagged():
     plan = build_plan([ticket("ENG-8", "immediate", "story", state="In Review")], {}, CFG)
     assert plan.releases == {}
     assert moves(plan) == {}
-    assert note(plan, "ENG-8") == Note("ENG-8", "In Review, not Ready for Deployment", attention=True)
+    assert brief(note(plan, "ENG-8")) == ("In Review, not Ready for Deployment", True)
+
+
+def test_attention_notes_carry_a_hint_and_the_ticket_uuid():
+    """Given a flagged ticket,
+    When the plan is built,
+    Then its note says what to do and identifies the ticket for a comment."""
+    plan = build_plan([ticket("ENG-5", "bug")], {}, CFG)
+    flagged = note(plan, "ENG-5")
+    assert "`immediate` or `gated`" in flagged.hint
+    assert flagged.uuid == "uuid-ENG-5"
 
 
 def test_done_ticket_not_yet_released_is_released_without_a_move():
@@ -146,14 +189,14 @@ def test_sub_issue_is_done_not_released_and_parent_with_open_child_stays_out():
 def test_last_sub_issue_releases_its_parent():
     """Given the last open sub-issue of an immediate story ships,
     When the plan is built,
-    Then the parent story is released and both move to Done."""
+    Then the parent story is released and waits at Deployed while the sub-issue is Done."""
     parent = ticket(
         "ENG-30", "immediate", "story", state="In Progress",
         children=(child("ENG-31", "Ready for Deployment"), child("ENG-32", "Done", "completed")),
     )
     plan = build_plan([ticket("ENG-31", "immediate", parent="ENG-30")], {"ENG-30": parent}, CFG)
     assert ids(plan.releases["astra"]) == ["ENG-30"]
-    assert moves(plan) == {"ENG-31": "Done", "ENG-30": "Done"}
+    assert moves(plan) == {"ENG-31": "Done", "ENG-30": "Deployed"}
 
 
 def test_gated_parent_is_not_released_when_complete():
@@ -181,7 +224,7 @@ def test_shipped_ticket_with_open_sub_issues_stops_at_deployed():
     plan = build_plan([t], {}, CFG)
     assert plan.releases == {}
     assert moves(plan) == {"ENG-50": "Deployed"}
-    assert note(plan, "ENG-50") == Note("ENG-50", "still has open sub-issues: ENG-51", attention=True)
+    assert brief(note(plan, "ENG-50")) == ("still has open sub-issues: ENG-51", True)
 
 
 def test_parent_and_its_last_child_shipped_together_releases_the_parent():
@@ -195,7 +238,7 @@ def test_parent_and_its_last_child_shipped_together_releases_the_parent():
     sub = ticket("ENG-61", "immediate", parent="ENG-60")
     plan = build_plan([sub, parent], {"ENG-60": parent}, CFG)
     assert ids(plan.releases["astra"]) == ["ENG-60"]
-    assert moves(plan) == {"ENG-60": "Done", "ENG-61": "Done"}
+    assert moves(plan) == {"ENG-60": "Deployed", "ENG-61": "Done"}
 
 
 def test_releases_and_moves_are_ordered_by_ticket_number():
@@ -220,4 +263,4 @@ def test_canceled_parent_is_not_released_when_its_last_sub_issue_ships():
     plan = build_plan([ticket("ENG-71", "immediate", parent="ENG-70")], {"ENG-70": parent}, CFG)
     assert plan.releases == {}
     assert "ENG-70" not in moves(plan)
-    assert note(plan, "ENG-70") == Note("ENG-70", "Canceled, so not released", attention=True)
+    assert brief(note(plan, "ENG-70")) == ("Canceled, so not released", True)

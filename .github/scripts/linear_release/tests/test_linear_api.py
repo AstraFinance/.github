@@ -187,18 +187,41 @@ def test_fetch_pipeline_missing_raises():
         LinearClient(API_KEY, post=post).fetch_pipeline("Internal Tooling")
 
 
-def test_notes_status_missing_pending_completed():
-    """Given a release with no note, then a pending note, then a finished one,
-    When the notes status is read each time,
-    Then it reports missing, pending, and completed with the note's text."""
-    post = FakePost(
-        {"data": {"release": {"releaseNotes": []}}},
-        {"data": {"release": {"releaseNotes": [{"generationStatus": "pending", "documentContent": None}]}}},
-        {"data": {"release": {"releaseNotes": [
-            {"generationStatus": "completed", "documentContent": {"content": "## What changed"}},
-        ]}}},
-    )
+def test_release_issues_maps_identifiers_to_uuids():
+    """Given a release with two tickets attached,
+    When its tickets are read,
+    Then each identifier maps to the ticket's id for later updates."""
+    post = FakePost({"data": {"release": {"issues": {"nodes": [
+        {"id": "uuid-1", "identifier": "ENG-1"}, {"id": "uuid-2", "identifier": "ENG-2"},
+    ]}}}})
+    assert LinearClient(API_KEY, post=post).release_issues("r1") == {"ENG-1": "uuid-1", "ENG-2": "uuid-2"}
+
+
+def test_detach_uses_removed_release_ids():
+    """Given a ticket attached to a release,
+    When it is detached,
+    Then only that release is removed from the ticket."""
+    post = FakePost({"data": {"issueUpdate": {"success": True}}})
+    LinearClient(API_KEY, post=post).detach("uuid-1", "r1")
+    assert post.requests[0]["body"]["variables"] == {"id": "uuid-1", "input": {"removedReleaseIds": ["r1"]}}
+
+
+def test_has_comment_finds_an_earlier_comment_with_the_text():
+    """Given a ticket whose comments include one from an earlier run,
+    When the run checks for its comment,
+    Then it finds it, and does not for text no comment contains."""
+    post = FakePost({"data": {"issue": {"comments": {"nodes": [
+        {"body": "Looks good"}, {"body": "**Linear release check · Delta 1.192.0**\n\nShipped..."},
+    ]}}}})
     client = LinearClient(API_KEY, post=post)
-    assert client.notes_status("r1") == ("missing", None)
-    assert client.notes_status("r1") == ("pending", None)
-    assert client.notes_status("r1") == ("completed", "## What changed")
+    assert client.has_comment("uuid-1", "Linear release check · Delta 1.192.0") is True
+    assert client.has_comment("uuid-1", "Linear release check · Delta 1.193.0") is False
+
+
+def test_comment_posts_markdown_on_the_ticket():
+    """Given a ticket and a message,
+    When the run comments,
+    Then a comment is created on that ticket with the message as its body."""
+    post = FakePost({"data": {"commentCreate": {"success": True}}})
+    LinearClient(API_KEY, post=post).comment("uuid-1", "Add a Release Method")
+    assert post.requests[0]["body"]["variables"] == {"input": {"issueId": "uuid-1", "body": "Add a Release Method"}}

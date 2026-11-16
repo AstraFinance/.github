@@ -9,9 +9,9 @@ from linear_release.model import ReleaseRef
 from linear_release.rules import build_plan
 
 from .factories import CFG, ticket
-from .fakes import FakeLinear
+from .fakes import STATES, FakeLinear
 
-MUTATIONS = {"create_release", "attach", "set_state", "complete_release"}
+MUTATIONS = {"create_release", "attach", "detach", "set_state", "comment"}
 
 CTX = Context(
     service="Delta",
@@ -24,8 +24,8 @@ CTX = Context(
 )
 
 
-def _plan(*tickets, own_ids=frozenset()):
-    return build_plan(list(tickets), {}, CFG, own_release_ids=own_ids)
+def _plan(*tickets, own_ids=frozenset(), completed=frozenset()):
+    return build_plan(list(tickets), {}, CFG, own_release_ids=own_ids, completed_audiences=completed)
 
 
 def test_release_name_first_second_third():
@@ -40,20 +40,34 @@ def test_release_name_first_second_third():
 
 
 def test_apply_orders_mutations():
-    """Given a plan with releases for both audiences and status moves,
+    """Given a plan with releases for both audiences, status moves and a flagged ticket,
     When it is applied,
-    Then releases are created and filled before statuses move, and completed only after that."""
+    Then releases are created and filled before statuses move, and owners are told last."""
     fake = FakeLinear()
     plan = _plan(ticket("ENG-1", "immediate", "bug"), ticket("ENG-2", "immediate", "internal"),
-                 ticket("ENG-3", "gated", "story"))
+                 ticket("ENG-3", "gated", "story"), ticket("ENG-5", "bug"))
 
-    apply_plan(plan, fake, CFG, CTX, own={}, sleep=lambda s: None)
+    apply_plan(plan, fake, CFG, CTX, own={})
 
-    order = [n for n in fake.names() if n in MUTATIONS | {"notes_status"}]
-    phases = ["create_release", "attach", "set_state", "complete_release", "notes_status"]
+    order = [n for n in fake.names() if n in MUTATIONS]
+    phases = ["create_release", "detach", "attach", "set_state", "comment"]
     assert order == sorted(order, key=phases.index)
-    assert order.count("create_release") == 2 and order.count("complete_release") == 2
-    assert order.count("set_state") == 3
+    assert order.count("create_release") == 2
+    assert order.count("set_state") == 4
+    assert order.count("comment") == 1
+
+
+def test_apply_leaves_new_releases_in_progress_for_review():
+    """Given a plan with a release,
+    When it is applied,
+    Then the release is created in its started stage and nothing completes it."""
+    fake = FakeLinear()
+    outcome = apply_plan(_plan(ticket("ENG-1", "immediate", "bug")), fake, CFG, CTX, own={})
+
+    assert fake.names().count("create_release") == 1
+    assert not [n for n in fake.names() if "complete" in n]
+    assert outcome.releases[0].released is False
+    assert ("set_state", ("uuid-ENG-1", "s-deployed")) in fake.calls
 
 
 def test_apply_writes_the_marker_first_in_the_description():
@@ -61,92 +75,152 @@ def test_apply_writes_the_marker_first_in_the_description():
     When its fields are sent,
     Then the description starts with the service and tag so a re-run can find it."""
     fake = FakeLinear()
-    result = apply_plan(_plan(ticket("ENG-1", "immediate", "bug")), fake, CFG, CTX, own={}, sleep=lambda s: None)
+    apply_plan(_plan(ticket("ENG-1", "immediate", "bug")), fake, CFG, CTX, own={})
 
-    create = next(args for name, args in fake.calls if name == "create_release")
-    _, name, version, sha, description, start = create
+    _, name, version, sha, description, start = fake.args_of("create_release")[0]
     assert (name, version, sha, start) == ("Astra 2026.11.13", "1.192.0", "abc123", "2026-11-13")
     assert description.startswith("Delta 1.192.0")
     assert CTX.compare_url in description
-    assert result.releases[0].notes == "## What changed"
 
 
 def test_dry_run_makes_no_mutations():
-    """Given a dry run,
-    When a plan is applied,
-    Then nothing in Linear changes and the release names that would be used are still reported."""
+    """Given a dry run with a releasable bug and a flagged one,
+    When the plan is applied,
+    Then nothing in Linear changes, and the names and comments that would happen are reported."""
     fake = FakeLinear(existing_names=["Astra 2026.11.13"])
-    plan = _plan(ticket("ENG-1", "immediate", "bug"))
+    plan = _plan(ticket("ENG-1", "immediate", "bug"), ticket("ENG-5", "bug"))
 
-    outcome = apply_plan(plan, fake, CFG, replace(CTX, dry_run=True), own={}, sleep=lambda s: None)
+    outcome = apply_plan(plan, fake, CFG, replace(CTX, dry_run=True), own={})
 
     assert not MUTATIONS & set(fake.names())
     assert [r.name for r in outcome.releases] == ["Astra 2026.11.13.2"]
-    assert outcome.releases[0].notes_status == "dry run"
+    assert outcome.commented == ("ENG-5",)
 
 
-def test_rerun_reuses_existing_release_and_skips_done_work():
-    """Given a re-run after the release was completed with ENG-1 already in it and Done,
-    When the plan now also holds ENG-2,
-    Then no release is created or completed again, ENG-1 is untouched and only ENG-2 is attached and moved."""
+def test_rerun_into_a_released_release_sends_new_tickets_to_done():
+    """Given a person already moved this deploy's release to Released with ENG-1 in it,
+    When a re-run finds a newly qualifying ENG-2,
+    Then ENG-2 is attached and moved to Done, ENG-1 is untouched, and nothing is removed."""
     own_ref = ReleaseRef("own-1", "Astra 2026.11.13", "https://linear.app/own-1")
     done_one = ticket("ENG-1", "immediate", "bug", state="Done", state_type="completed",
                       completed_releases=(own_ref,))
-    new_two = ticket("ENG-2", "immediate", "bug")
-    plan = _plan(done_one, new_two, own_ids=frozenset({"own-1"}))
-    fake = FakeLinear()
+    plan = _plan(done_one, ticket("ENG-2", "immediate", "bug"),
+                 own_ids=frozenset({"own-1"}), completed=frozenset({"astra"}))
+    fake = FakeLinear(attached={"own-1": {"ENG-1": "uuid-ENG-1"}})
 
-    outcome = apply_plan(plan, fake, CFG, CTX, own={"astra": (own_ref, True)}, sleep=lambda s: None)
+    outcome = apply_plan(plan, fake, CFG, CTX, own={"astra": (own_ref, True)})
 
-    assert "create_release" not in fake.names() and "complete_release" not in fake.names()
-    assert [args for name, args in fake.calls if name == "attach"] == [("uuid-ENG-2", "own-1")]
-    assert [args for name, args in fake.calls if name == "set_state"] == [("uuid-ENG-2", "s-done")]
-    assert outcome.releases[0].name == "Astra 2026.11.13"
+    assert "create_release" not in fake.names() and "release_issues" not in fake.names()
+    assert fake.args_of("attach") == [("uuid-ENG-2", "own-1")]
+    assert fake.args_of("set_state") == [("uuid-ENG-2", "s-done")]
+    assert outcome.releases[0].released is True
     assert outcome.releases[0].created is False
-    assert outcome.releases[0].notes_status == "unchanged"
 
 
-def test_rerun_completes_a_release_left_open_by_a_failed_run():
-    """Given an earlier run created this deploy's release but failed before completing it,
-    When the run is repeated,
-    Then the existing release is completed and its notes are awaited."""
+def test_rerun_into_a_started_release_does_not_attach_tickets_twice():
+    """Given an earlier run created this deploy's release and attached ENG-1,
+    When the run is repeated with a new ticket,
+    Then ENG-1 is not attached again and only the new ticket is."""
     own_ref = ReleaseRef("own-2", "Astra 2026.11.13", "u")
+    attached = ticket("ENG-1", "immediate", "bug", release_ids=frozenset({"own-2"}))
+    fake = FakeLinear(attached={"own-2": {"ENG-1": "uuid-ENG-1"}})
+
+    apply_plan(_plan(attached, ticket("ENG-2", "immediate", "bug")), fake, CFG, CTX,
+               own={"astra": (own_ref, False)})
+
+    assert fake.args_of("attach") == [("uuid-ENG-2", "own-2")]
+
+
+def test_rerun_removes_tickets_that_no_longer_qualify():
+    """Given an open release still holding ENG-3, which was relabeled gated after the first run,
+    When the run is repeated,
+    Then ENG-3 is removed from the release and ENG-1 stays."""
+    own_ref = ReleaseRef("own-3", "Astra 2026.11.13", "u")
+    fake = FakeLinear(attached={"own-3": {"ENG-1": "uuid-ENG-1", "ENG-3": "uuid-ENG-3"}})
+    plan = _plan(ticket("ENG-1", "immediate", "bug", release_ids=frozenset({"own-3"})),
+                 ticket("ENG-3", "gated", "story", release_ids=frozenset({"own-3"})))
+
+    outcome = apply_plan(plan, fake, CFG, CTX, own={"astra": (own_ref, False)})
+
+    assert fake.args_of("detach") == [("uuid-ENG-3", "own-3")]
+    assert outcome.releases[0].removed == ("ENG-3",)
+    assert outcome.releases[0].tickets == ("ENG-1",)
+
+
+def test_rerun_empties_a_release_when_nothing_qualifies_any_more():
+    """Given an open release whose only ticket was relabeled gated,
+    When the run is repeated,
+    Then the ticket is removed and the empty release is still reported so a person can cancel it."""
+    own_ref = ReleaseRef("own-4", "Astra 2026.11.13", "u")
+    fake = FakeLinear(attached={"own-4": {"ENG-3": "uuid-ENG-3"}})
+
+    outcome = apply_plan(_plan(ticket("ENG-3", "gated", "story")), fake, CFG, CTX,
+                         own={"astra": (own_ref, False)})
+
+    assert fake.args_of("detach") == [("uuid-ENG-3", "own-4")]
+    assert outcome.releases[0].tickets == ()
+    assert outcome.releases[0].removed == ("ENG-3",)
+
+
+def test_flagged_ticket_gets_a_comment_with_what_to_do():
+    """Given a bug shipped without a Release Method label,
+    When the plan is applied,
+    Then its owner gets a comment naming the deploy, the problem and the fix."""
     fake = FakeLinear()
+    outcome = apply_plan(_plan(ticket("ENG-5", "bug")), fake, CFG, CTX, own={})
 
-    outcome = apply_plan(_plan(ticket("ENG-1", "immediate", "bug")), fake, CFG, CTX,
-                         own={"astra": (own_ref, False)}, sleep=lambda s: None)
+    [(uuid, body)] = fake.args_of("comment")
+    assert uuid == "uuid-ENG-5"
+    assert "Linear release check · Delta 1.192.0" in body
+    assert "no Release Method label" in body
+    assert "`immediate` or `gated`" in body
+    assert outcome.commented == ("ENG-5",)
 
-    assert "create_release" not in fake.names()
-    assert ("complete_release", ("own-2", "done-Astra")) in fake.calls
-    assert outcome.releases[0].notes_status == "completed"
+
+def test_flagged_ticket_is_commented_on_once_per_deploy():
+    """Given the ticket already carries this deploy's comment from an earlier run,
+    When the run is repeated,
+    Then no second comment is posted."""
+    fake = FakeLinear(comments={"uuid-ENG-5": ["**Linear release check · Delta 1.192.0**\n\nLeft out..."]})
+    outcome = apply_plan(_plan(ticket("ENG-5", "bug")), fake, CFG, CTX, own={})
+
+    assert "comment" not in fake.names()
+    assert outcome.commented == ()
 
 
-def test_notes_timeout_leaves_pending_message():
-    """Given Linear never finishes generating notes,
-    When the plan is applied with a 30 second budget polled every 10 seconds,
-    Then it polls three times and reports the notes as pending."""
-    fake = FakeLinear(notes=("pending", None))
-    cfg = replace(CFG, notes_timeout_s=30, notes_interval_s=10)
-    slept = []
+def test_informational_notes_get_no_comment():
+    """Given a deliberately typed task and a gated story,
+    When the plan is applied,
+    Then nobody is asked to fix anything."""
+    fake = FakeLinear()
+    apply_plan(_plan(ticket("ENG-4", "immediate", "task"), ticket("ENG-3", "gated", "story")),
+               fake, CFG, CTX, own={})
 
-    outcome = apply_plan(_plan(ticket("ENG-1", "immediate", "bug")), fake, cfg, CTX, own={}, sleep=slept.append)
+    assert "comment" not in fake.names()
 
-    assert fake.names().count("notes_status") == 3
-    assert slept == [10, 10]
-    assert outcome.releases[0].notes_status == "pending"
-    assert outcome.releases[0].notes is None
+
+def test_missing_workflow_state_stops_before_any_change():
+    """Given the team has no Deployed state, for example after a rename,
+    When a plan needing it is applied,
+    Then the run stops before creating or changing anything."""
+    fake = FakeLinear(states={k: v for k, v in STATES.items() if k != "Deployed"})
+
+    with pytest.raises(LinearError, match="Deployed"):
+        apply_plan(_plan(ticket("ENG-1", "immediate", "bug")), fake, CFG, CTX, own={})
+
+    assert not MUTATIONS & set(fake.names())
 
 
 def test_plan_without_releases_creates_nothing():
     """Given a plan that only moves statuses,
     When it is applied,
-    Then no release is created, completed or polled."""
+    Then no release is created or read."""
     fake = FakeLinear()
-    outcome = apply_plan(_plan(ticket("ENG-3", "gated", "story")), fake, CFG, CTX, own={}, sleep=lambda s: None)
+    outcome = apply_plan(_plan(ticket("ENG-3", "gated", "story")), fake, CFG, CTX, own={})
 
     assert outcome.releases == ()
     assert outcome.moved == (("ENG-3", "Deployed"),)
-    assert {"create_release", "complete_release", "notes_status"}.isdisjoint(fake.names())
+    assert {"create_release", "release_issues"}.isdisjoint(fake.names())
 
 
 def test_find_own_releases_checks_both_pipelines_with_the_marker():
@@ -159,38 +233,6 @@ def test_find_own_releases_checks_both_pipelines_with_the_marker():
     found = find_own_releases(fake, CFG, CTX)
 
     assert found == {"internal": (own_ref, True)}
-    searched = [args for name, args in fake.calls if name == "find_own_release"]
-    assert searched == [("p-Astra", "1.192.0", "Delta 1.192.0"), ("p-Internal Tooling", "1.192.0", "Delta 1.192.0")]
-
-
-@pytest.mark.parametrize("error", [LinearError("NotesStatus: boom"), TimeoutError("read timed out")])
-def test_notes_errors_never_fail_a_run_that_already_changed_linear(error):
-    """Given the release is created, filled and completed but reading its notes fails,
-    When the plan is applied,
-    Then the run still returns an outcome with the notes reported as pending."""
-
-    class FailingNotes(FakeLinear):
-        def notes_status(self, release_id):
-            self._log("notes_status", release_id)
-            raise error
-
-    fake = FailingNotes()
-    outcome = apply_plan(_plan(ticket("ENG-1", "immediate", "bug")), fake, CFG, CTX, own={}, sleep=lambda s: None)
-
-    assert "complete_release" in fake.names()
-    assert outcome.releases[0].notes_status == "pending"
-    assert outcome.releases[0].notes is None
-
-
-def test_rerun_into_a_started_release_does_not_attach_tickets_twice():
-    """Given an earlier run created this deploy's release and attached ENG-1, then failed before completing it,
-    When the run is repeated,
-    Then ENG-1 is not attached again and only the new ticket is."""
-    own_ref = ReleaseRef("own-2", "Astra 2026.11.13", "u")
-    attached = ticket("ENG-1", "immediate", "bug", release_ids=frozenset({"own-2"}))
-    fake = FakeLinear()
-
-    apply_plan(_plan(attached, ticket("ENG-2", "immediate", "bug")), fake, CFG, CTX,
-               own={"astra": (own_ref, False)}, sleep=lambda s: None)
-
-    assert [args for name, args in fake.calls if name == "attach"] == [("uuid-ENG-2", "own-2")]
+    assert fake.args_of("find_own_release") == [
+        ("p-Astra", "1.192.0", "Delta 1.192.0"), ("p-Internal Tooling", "1.192.0", "Delta 1.192.0"),
+    ]

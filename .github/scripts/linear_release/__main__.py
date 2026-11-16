@@ -7,10 +7,9 @@ import argparse
 import os
 import subprocess
 import sys
-import time
 from datetime import date, datetime
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from .apply import Context, apply_plan, find_own_releases
@@ -37,7 +36,6 @@ def main(
     env: Mapping[str, str] = os.environ,
     client=None,
     today: date | None = None,
-    sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     args = _parse(argv)
     cfg = Config()
@@ -75,14 +73,26 @@ def main(
             dry_run=args.dry_run,
         )
         own = find_own_releases(client, cfg, ctx) if shipped else {}
-        plan = build_plan(shipped, parents, cfg, frozenset(ref.id for ref, _ in own.values()))
-        outcome = apply_plan(plan, client, cfg, ctx, own, sleep=sleep)
+        plan = build_plan(
+            shipped,
+            parents,
+            cfg,
+            own_release_ids=frozenset(ref.id for ref, _ in own.values()),
+            completed_audiences=frozenset(audience for audience, (_, released) in own.items() if released),
+        )
+        outcome = apply_plan(plan, client, cfg, ctx, own)
     except (LinearError, ValueError, subprocess.CalledProcessError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
     text = render(ctx, plan, outcome, not_found, unticketed)
     print(text)
+    # Workflow warnings show on the run page and in the Actions list, where a
+    # summary nobody opens would not be seen.
+    if env.get("GITHUB_ACTIONS") == "true":
+        for note in plan.notes:
+            if note.attention:
+                print(f"::warning title=Linear release::{note.identifier}: {note.reason}")
     summary_path = env.get("GITHUB_STEP_SUMMARY")
     if summary_path:
         with open(summary_path, "a", encoding="utf-8") as summary:

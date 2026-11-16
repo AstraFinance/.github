@@ -1,19 +1,19 @@
 """Carry out a release plan in Linear, in an order that is safe to repeat.
 
-Releases are created and filled before any status moves, and completed only
-after every released ticket is Done: the pipelines roll open issues into a
-new release on completion, so completing earlier would scatter the tickets.
+Releases are left In Progress: a person reviews each one in Linear and moves it
+to Released, which makes Linear write its notes and move its tickets to Done.
+Until then a re-run can still correct the release, adding tickets that now
+qualify and removing ones that no longer do.
 """
 
 import re
-import time
 from dataclasses import dataclass
 from datetime import date
-from typing import Callable, Iterable
+from typing import Iterable
 
 from .config import Config
 from .linear_api import LinearError, Pipeline
-from .model import Audience, Plan, ReleaseRef
+from .model import Audience, Note, Plan, ReleaseRef
 
 AUDIENCES: tuple[Audience, ...] = ("astra", "internal")
 
@@ -33,6 +33,11 @@ class Context:
         """How a release made for this deploy is recognized on a re-run."""
         return f"{self.service} {self.tag}"
 
+    @property
+    def comment_header(self) -> str:
+        """How this deploy's comment on a ticket is recognized, so it is posted once."""
+        return f"Linear release check · {self.marker}"
+
 
 @dataclass(frozen=True)
 class ReleaseResult:
@@ -41,14 +46,18 @@ class ReleaseResult:
     url: str
     tickets: tuple[str, ...]
     created: bool
-    notes: str | None
-    notes_status: str
+    # A person has already moved it to Released.
+    released: bool
+    # Tickets taken out because they no longer qualify.
+    removed: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class Outcome:
     releases: tuple[ReleaseResult, ...]
     moved: tuple[tuple[str, str], ...]
+    # Tickets whose owners were asked to fix something (in a dry run, would be asked).
+    commented: tuple[str, ...]
 
 
 def release_name(prefix: str, day: date, existing: Iterable[str]) -> str:
@@ -81,6 +90,10 @@ def find_own_releases(client, cfg: Config, ctx: Context) -> dict[Audience, tuple
     return found
 
 
+def comment_body(ctx: Context, note: Note) -> str:
+    return f"**{ctx.comment_header}**\n\nLeft out of the Linear release for {ctx.marker}: {note.reason}.\n\n{note.hint}"
+
+
 @dataclass
 class _Target:
     audience: Audience
@@ -88,7 +101,8 @@ class _Target:
     name: str
     ref: ReleaseRef | None
     created: bool
-    was_completed: bool
+    released: bool
+    removed: tuple[str, ...] = ()
 
 
 def apply_plan(
@@ -97,16 +111,26 @@ def apply_plan(
     cfg: Config,
     ctx: Context,
     own: dict[Audience, tuple[ReleaseRef, bool]],
-    sleep: Callable[[float], None] = time.sleep,
 ) -> Outcome:
+    # Resolved first, so a renamed status stops the run before anything changes.
+    state_ids: dict[str, str] = {}
+    if plan.moves:
+        state_ids = client.state_ids(cfg.team_key)
+        missing = sorted({m.to_state for m in plan.moves} - set(state_ids))
+        if missing:
+            raise LinearError(f"SetState: no workflow state named {', '.join(map(repr, missing))}")
+
     targets: list[_Target] = []
     for audience in AUDIENCES:
-        if not plan.releases.get(audience):
+        planned = plan.releases.get(audience, ())
+        # An open release from an earlier run is visited even when nothing
+        # qualifies now, so the tickets that stopped qualifying come out of it.
+        if not planned and audience not in own:
             continue
         pipeline = client.fetch_pipeline(_pipeline_name(cfg, audience))
         if audience in own:
-            ref, completed = own[audience]
-            targets.append(_Target(audience, pipeline, ref.name, ref, False, completed))
+            ref, released = own[audience]
+            targets.append(_Target(audience, pipeline, ref.name, ref, False, released))
             continue
         prefix = _prefix(cfg, audience)
         base = f"{prefix} {ctx.today:%Y.%m.%d}"
@@ -117,69 +141,51 @@ def apply_plan(
             ref = client.create_release(pipeline, name, ctx.tag, ctx.commit_sha, description, ctx.today.isoformat())
         targets.append(_Target(audience, pipeline, name, ref, True, False))
 
-    moved = tuple((m.ticket.identifier, m.to_state) for m in plan.moves)
+    # A release a person has already released is the record of what shipped,
+    # so it is never trimmed; only open releases are corrected.
+    for target in targets:
+        if target.created or target.released:
+            continue
+        planned_ids = {t.identifier for t in plan.releases.get(target.audience, ())}
+        attached = client.release_issues(target.ref.id)
+        stale = sorted(identifier for identifier in attached if identifier not in planned_ids)
+        target.removed = tuple(stale)
+        if not ctx.dry_run:
+            for identifier in stale:
+                client.detach(attached[identifier], target.ref.id)
 
     if not ctx.dry_run:
         for target in targets:
-            for t in plan.releases[target.audience]:
+            for t in plan.releases.get(target.audience, ()):
                 if target.ref.id not in t.release_ids:
                     client.attach(t.uuid, target.ref.id)
+        for move in plan.moves:
+            client.set_state(move.ticket.uuid, state_ids[move.to_state])
 
-        if plan.moves:
-            state_ids = client.state_ids(cfg.team_key)
-            for move in plan.moves:
-                state_id = state_ids.get(move.to_state)
-                if state_id is None:
-                    raise LinearError(f"SetState: no workflow state named {move.to_state!r}")
-                client.set_state(move.ticket.uuid, state_id)
-
-        for target in targets:
-            if not target.was_completed:
-                client.complete_release(target.ref.id, target.pipeline.completed_stage_id)
-
-    notes = _await_notes(client, cfg, ctx, targets, sleep)
+    commented = []
+    for note in plan.notes:
+        if not (note.attention and note.uuid and note.hint):
+            continue
+        if client.has_comment(note.uuid, ctx.comment_header):
+            continue
+        if not ctx.dry_run:
+            client.comment(note.uuid, comment_body(ctx, note))
+        commented.append(note.identifier)
 
     results = tuple(
         ReleaseResult(
             audience=target.audience,
             name=target.name,
             url=target.ref.url if target.ref else "",
-            tickets=tuple(t.identifier for t in plan.releases[target.audience]),
+            tickets=tuple(t.identifier for t in plan.releases.get(target.audience, ())),
             created=target.created,
-            notes=notes[target.audience][1],
-            notes_status=notes[target.audience][0],
+            released=target.released,
+            removed=target.removed,
         )
         for target in targets
     )
-    return Outcome(releases=results, moved=moved)
-
-
-def _await_notes(client, cfg, ctx, targets, sleep) -> dict[Audience, tuple[str, str | None]]:
-    """Wait a bounded time for Linear's generated notes; never fail the run over them."""
-    status: dict[Audience, tuple[str, str | None]] = {}
-    waiting = []
-    for target in targets:
-        if ctx.dry_run:
-            status[target.audience] = ("dry run", None)
-        elif target.was_completed:
-            status[target.audience] = ("unchanged", None)
-        else:
-            waiting.append(target)
-
-    rounds = max(1, cfg.notes_timeout_s // cfg.notes_interval_s)
-    for round_number in range(rounds):
-        for target in list(waiting):
-            try:
-                state, content = client.notes_status(target.ref.id)
-            except (LinearError, OSError):
-                # Linear already holds the finished release; a failed read only
-                # means the deployer copies the notes from Linear instead.
-                state, content = "pending", None
-            status[target.audience] = (state, content)
-            if state == "completed":
-                waiting.remove(target)
-        if not waiting:
-            break
-        if round_number < rounds - 1:
-            sleep(cfg.notes_interval_s)
-    return status
+    return Outcome(
+        releases=results,
+        moved=tuple((m.ticket.identifier, m.to_state) for m in plan.moves),
+        commented=tuple(commented),
+    )

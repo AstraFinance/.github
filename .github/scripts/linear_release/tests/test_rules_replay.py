@@ -16,7 +16,7 @@ def _states(plan, state):
 def test_replay_delta_1_191_0():
     """Given the thirteen tickets in delta-backend's 1.190.0..1.191.0 range,
     When the plan is built,
-    Then no release is made, gated work stops at Deployed, and only the unlabeled bug is flagged."""
+    Then no release is made, gated work stops at Deployed, and the two mislabeled tickets are flagged."""
     shipped = [
         ticket("ENG-2278", "bug", "internal", "vector", "gated", "low-risk", "repo:delta-backend",
                "feature-flagged", parent="ENG-1406"),
@@ -54,13 +54,13 @@ def test_replay_delta_1_191_0():
     assert _states(plan, "Deployed") == {
         "ENG-2278", "ENG-1225", "ENG-1948", "ENG-1949", "ENG-1027", "ENG-1947", "ENG-2131",
     }
-    assert [n.identifier for n in plan.notes if n.attention] == ["ENG-2131"]
+    assert [n.identifier for n in plan.notes if n.attention] == ["ENG-847", "ENG-2131"]
 
 
 def test_replay_helios_v1_18_0():
     """Given the five tickets in astra-helios's v1.17.0..v1.18.0 range,
     When the plan is built,
-    Then the unlabeled metrics bug goes to Astra, the internal ticket to Internal, and the gated one stops at Deployed."""
+    Then the unlabeled metrics bug goes to Astra and the internal ticket to Internal, both waiting at Deployed for a person to release them."""
     shipped = [
         ticket("ENG-2103", "bug", "platform-health", "immediate", "low-risk"),
         ticket("ENG-1686", "dual-sponsor", parent="ENG-1368"),
@@ -77,5 +77,5 @@ def test_replay_helios_v1_18_0():
 
     assert ids(plan.releases["astra"]) == ["ENG-2103"]
     assert ids(plan.releases["internal"]) == ["ENG-2044"]
-    assert _states(plan, "Done") == {"ENG-2103", "ENG-2044", "ENG-1686", "ENG-2003"}
-    assert _states(plan, "Deployed") == {"ENG-1023"}
+    assert _states(plan, "Done") == {"ENG-1686", "ENG-2003"}
+    assert _states(plan, "Deployed") == {"ENG-1023", "ENG-2044", "ENG-2103"}

@@ -3,16 +3,22 @@
 from linear_release.linear_api import Pipeline
 from linear_release.model import ReleaseRef
 
+STATES = {"Ready for Deployment": "s-ready", "Deployed": "s-deployed", "Done": "s-done"}
+
 
 class FakeLinear:
     """An in-memory stand-in for LinearClient that logs every call in order."""
 
-    def __init__(self, existing_names=(), notes=("completed", "## What changed"), own=None, tickets=None):
+    def __init__(self, existing_names=(), own=None, tickets=None, attached=None, comments=None, states=None):
         self.tickets = {t.identifier: t for t in (tickets or ())}
         self.calls = []
         self.existing_names = list(existing_names)
-        self.notes = notes
         self.own = own or {}
+        # release id -> {identifier: uuid} already attached to that release
+        self.attached = attached or {}
+        # ticket uuid -> comment bodies already on that ticket
+        self.comments = comments or {}
+        self.states = STATES if states is None else states
         self.created = 0
 
     def _log(self, name, *args):
@@ -24,7 +30,7 @@ class FakeLinear:
 
     def state_ids(self, team_key):
         self._log("state_ids", team_key)
-        return {"Ready for Deployment": "s-ready", "Deployed": "s-deployed", "Done": "s-done"}
+        return dict(self.states)
 
     def fetch_pipeline(self, name):
         self._log("fetch_pipeline", name)
@@ -43,18 +49,28 @@ class FakeLinear:
         self.created += 1
         return ReleaseRef(f"rel-{self.created}", name, f"https://linear.app/rel-{self.created}")
 
+    def release_issues(self, release_id):
+        self._log("release_issues", release_id)
+        return dict(self.attached.get(release_id, {}))
+
     def attach(self, issue_uuid, release_id):
         self._log("attach", issue_uuid, release_id)
+
+    def detach(self, issue_uuid, release_id):
+        self._log("detach", issue_uuid, release_id)
 
     def set_state(self, issue_uuid, state_id):
         self._log("set_state", issue_uuid, state_id)
 
-    def complete_release(self, release_id, completed_stage_id):
-        self._log("complete_release", release_id, completed_stage_id)
+    def has_comment(self, issue_uuid, text):
+        self._log("has_comment", issue_uuid, text)
+        return any(text in body for body in self.comments.get(issue_uuid, ()))
 
-    def notes_status(self, release_id):
-        self._log("notes_status", release_id)
-        return self.notes
+    def comment(self, issue_uuid, body):
+        self._log("comment", issue_uuid, body)
 
     def names(self):
         return [name for name, _ in self.calls]
+
+    def args_of(self, name):
+        return [args for call, args in self.calls if call == name]

@@ -10,7 +10,6 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Callable, Sequence
 
 from .model import Child, ReleaseRef, Ticket
@@ -80,15 +79,21 @@ mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
 }
 """
 
-COMPLETE_RELEASE_GQL = """
-mutation CompleteRelease($id: String!, $input: ReleaseUpdateInput!) {
-  releaseUpdate(id: $id, input: $input) { success }
+RELEASE_ISSUES_GQL = """
+query ReleaseIssues($id: String!) {
+  release(id: $id) { issues(first: 250) { nodes { id identifier } } }
 }
 """
 
-NOTES_STATUS_GQL = """
-query NotesStatus($id: String!) {
-  release(id: $id) { releaseNotes { generationStatus documentContent { content } } }
+ISSUE_COMMENTS_GQL = """
+query IssueComments($id: String!) {
+  issue(id: $id) { comments(first: 100) { nodes { body } } }
+}
+"""
+
+CREATE_COMMENT_GQL = """
+mutation CreateComment($input: CommentCreateInput!) {
+  commentCreate(input: $input) { success }
 }
 """
 
@@ -255,24 +260,25 @@ class LinearClient:
             "SetState", UPDATE_ISSUE_GQL, {"id": issue_uuid, "input": {"stateId": state_id}}, "issueUpdate",
         )
 
-    def complete_release(self, release_id: str, completed_stage_id: str) -> None:
-        completed_at = datetime.now(timezone.utc).isoformat()
+    def release_issues(self, release_id: str) -> dict[str, str]:
+        """The tickets attached to a release, by identifier, with their ids."""
+        data = self._run("ReleaseIssues", RELEASE_ISSUES_GQL, {"id": release_id})
+        return {node["identifier"]: node["id"] for node in data["release"]["issues"]["nodes"]}
+
+    def detach(self, issue_uuid: str, release_id: str) -> None:
         self._mutate(
-            "CompleteRelease", COMPLETE_RELEASE_GQL,
-            {"id": release_id, "input": {"stageId": completed_stage_id, "completedAt": completed_at}},
-            "releaseUpdate",
+            "DetachFromRelease", UPDATE_ISSUE_GQL,
+            {"id": issue_uuid, "input": {"removedReleaseIds": [release_id]}}, "issueUpdate",
         )
 
-    def notes_status(self, release_id: str) -> tuple[str, str | None]:
-        data = self._run("NotesStatus", NOTES_STATUS_GQL, {"id": release_id})
-        notes = data["release"]["releaseNotes"]
-        for note in notes:
-            content = (note.get("documentContent") or {}).get("content")
-            if note.get("generationStatus") == "completed" and content:
-                return "completed", content
-        if notes:
-            return "pending", None
-        return "missing", None
+    def has_comment(self, issue_uuid: str, text: str) -> bool:
+        data = self._run("IssueComments", ISSUE_COMMENTS_GQL, {"id": issue_uuid})
+        return any(text in (node.get("body") or "") for node in data["issue"]["comments"]["nodes"])
+
+    def comment(self, issue_uuid: str, body: str) -> None:
+        self._mutate(
+            "CreateComment", CREATE_COMMENT_GQL, {"input": {"issueId": issue_uuid, "body": body}}, "commentCreate",
+        )
 
 
 def _ticket(node: dict) -> Ticket:

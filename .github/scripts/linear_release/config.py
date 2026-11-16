@@ -19,6 +19,9 @@ class Config:
     released_types: tuple[str, ...] = ("story", "bug")
     # Ticket kinds that must carry a Release Method label before they ship.
     method_required_types: tuple[str, ...] = ("story", "bug", "tech-debt", "internal")
+    # Labels that say what kind of ticket this is. A top-level ticket with none
+    # of them may be a story nobody labeled, so it is flagged.
+    type_labels: tuple[str, ...] = ("story", "bug", "task", "tech-debt", "spike", "improvement")
 
     state_ready: str = "Ready for Deployment"
     state_deployed: str = "Deployed"
@@ -31,6 +34,3 @@ class Config:
 
     # Release names carry the availability date as the team sees it.
     timezone: str = "America/New_York"
-
-    notes_timeout_s: int = 180
-    notes_interval_s: int = 10

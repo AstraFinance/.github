@@ -8,7 +8,7 @@ from linear_release.__main__ import main
 from .factories import ticket
 from .fakes import FakeLinear
 
-MUTATIONS = {"create_release", "attach", "set_state", "complete_release"}
+MUTATIONS = {"create_release", "attach", "detach", "set_state", "comment"}
 
 
 def _git(repo, *args):
@@ -36,12 +36,13 @@ def repo(tmp_path):
     return build
 
 
-def _run(repo_path, fake, tmp_path, *extra, env=None):
+def _run(repo_path, fake, tmp_path, *extra, env=None, extra_env=None):
     summary = tmp_path / "summary.md"
     argv = ["--repo-dir", str(repo_path), "--tag", "v1.18.0", "--service", "Helios",
             "--repo", "AstraFinance/astra-helios", *extra]
     environment = {"LINEAR_API_KEY": "test-key", "GITHUB_STEP_SUMMARY": str(summary)} if env is None else env
-    code = main(argv, env=environment, client=fake, today=date(2026, 11, 4), sleep=lambda s: None)
+    environment = {**environment, **(extra_env or {})}
+    code = main(argv, env=environment, client=fake, today=date(2026, 11, 4))
     return code, summary.read_text() if summary.exists() else ""
 
 
@@ -64,7 +65,7 @@ def test_main_dry_run_end_to_end(repo, tmp_path):
 def test_main_applies_the_plan_when_not_a_dry_run(repo, tmp_path):
     """Given a tag range with one releasable bug and no dry run,
     When the entry point runs,
-    Then the release is created with the tagged commit and the ticket is moved."""
+    Then the release is created with the tagged commit and the ticket waits at Deployed for review."""
     path = repo("ENG-1: Fix the percentile buckets (#1)")
     fake = FakeLinear(tickets=[ticket("ENG-1", "immediate", "bug")])
 
@@ -75,8 +76,8 @@ def test_main_applies_the_plan_when_not_a_dry_run(repo, tmp_path):
     head = subprocess.run(["git", "-C", str(path), "rev-parse", "v1.18.0"],
                           capture_output=True, text=True, check=True).stdout.strip()
     assert create[3] == head
-    assert ("set_state", ("uuid-ENG-1", "s-done")) in fake.calls
-    assert "## What changed" in summary
+    assert ("set_state", ("uuid-ENG-1", "s-deployed")) in fake.calls
+    assert "### Next steps" in summary
 
 
 def test_main_with_no_ticket_ids_succeeds_without_release(repo, tmp_path):
@@ -132,3 +133,28 @@ def test_main_rejects_an_unknown_tag(repo, tmp_path, capsys):
     assert code == 2
     assert "v9.9.9" in capsys.readouterr().err
     assert fake.calls == []
+
+
+def test_main_emits_github_warnings_for_flagged_tickets(repo, tmp_path, capsys):
+    """Given a run inside GitHub Actions that ships a bug without a Release Method label,
+    When the entry point runs,
+    Then the bug is raised as a workflow warning so the run shows it."""
+    path = repo("ENG-5: Fix the parser (#5)")
+    fake = FakeLinear(tickets=[ticket("ENG-5", "bug")])
+
+    code, _ = _run(path, fake, tmp_path, "--dry-run", extra_env={"GITHUB_ACTIONS": "true"})
+
+    assert code == 0
+    assert "::warning title=Linear release::ENG-5: no Release Method label" in capsys.readouterr().out
+
+
+def test_main_prints_no_workflow_commands_outside_github_actions(repo, tmp_path, capsys):
+    """Given a run on a laptop,
+    When the entry point runs with a flagged ticket,
+    Then no GitHub workflow commands clutter the output."""
+    path = repo("ENG-5: Fix the parser (#5)")
+    fake = FakeLinear(tickets=[ticket("ENG-5", "bug")])
+
+    _run(path, fake, tmp_path, "--dry-run")
+
+    assert "::warning" not in capsys.readouterr().out
