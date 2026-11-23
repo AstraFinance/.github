@@ -1,0 +1,33 @@
+name: Test linear_release
+
+on:
+  pull_request:
+    paths:
+      - ".github/scripts/linear_release/**"
+      - ".github/workflows/*linear_release*.yaml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/scripts/linear_release/**"
+      - ".github/workflows/*linear_release*.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run tests
+        working-directory: .github/scripts
+        run: python -m pytest linear_release/tests -q
