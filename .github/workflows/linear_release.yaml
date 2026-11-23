@@ -41,10 +41,14 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-    # One run per repository at a time, so two runs can't both create a release for the same day.
+    # One run per repository at a time, so two runs can't both create a release
+    # for the same day. Waiting runs queue in order: by default GitHub keeps one
+    # pending run and cancels it when another arrives, so a deployed tag would
+    # get no release.
     concurrency:
       group: linear-release-${{ github.repository }}
       cancel-in-progress: false
+      queue: max
 
     steps:
       - name: Check out the deployed repository with its tags

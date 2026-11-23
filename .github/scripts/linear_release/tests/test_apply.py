@@ -162,6 +162,21 @@ def test_rerun_empties_a_release_when_nothing_qualifies_any_more():
     assert outcome.releases[0].removed == ("ENG-3",)
 
 
+def test_rerun_leaves_a_release_alone_once_a_person_has_released_it():
+    """Given an open release still holding ENG-3, now gated, which a person releases while the run is going,
+    When the run reaches the trim,
+    Then the release's stage is read again, nothing is detached, and the release is reported as released."""
+    own_ref = ReleaseRef("own-5", "Astra 2026.11.13", "u")
+    fake = FakeLinear(attached={"own-5": {"ENG-1": "uuid-ENG-1", "ENG-3": "uuid-ENG-3"}}, completed={"own-5"})
+    plan = _plan(ticket("ENG-1", "immediate", "bug", release_ids=frozenset({"own-5"})),
+                 ticket("ENG-3", "gated", "story", release_ids=frozenset({"own-5"})))
+
+    outcome = apply_plan(plan, fake, CFG, CTX, own={"astra": (own_ref, False)})
+
+    assert (fake.args_of("release_completed"), fake.args_of("detach")) == ([("own-5",)], [])
+    assert (outcome.releases[0].released, outcome.releases[0].removed) == (True, ())
+
+
 def test_flagged_ticket_gets_a_comment_with_what_to_do():
     """Given a bug shipped without a Release Method label,
     When the plan is applied,

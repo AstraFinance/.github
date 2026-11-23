@@ -15,25 +15,56 @@ from typing import Callable, Sequence
 from .model import Child, ReleaseRef, Ticket
 
 API_URL = "https://api.linear.app/graphql"
-_CHUNK = 100
 
-FETCH_TICKETS_GQL = """
-query FetchTickets($teamKey: String!, $numbers: [Float!]!) {
-  issues(filter: {team: {key: {eq: $teamKey}}, number: {in: $numbers}}, first: 100) {
-    nodes {
+# Linear rejects any query above 10,000 complexity points, and scores a
+# connection by its declared `first:` times the cost of each node, whatever
+# comes back. So tickets are fetched a few at a time with small nested bounds,
+# and a nested list longer than its bound is read to the end page by page.
+_CHUNK = 25
+_NESTED = 25
+_PAGE = 100
+
+_PAGE_INFO = "pageInfo { hasNextPage endCursor }"
+_LABEL_FIELDS = "nodes { name }"
+_CHILD_FIELDS = "nodes { identifier state { name type } }"
+_RELEASE_FIELDS = "nodes { id name url stage { type } }"
+
+FETCH_TICKETS_GQL = f"""
+query FetchTickets($teamKey: String!, $numbers: [Float!]!) {{
+  issues(filter: {{team: {{key: {{eq: $teamKey}}}}, number: {{in: $numbers}}}}, first: {_CHUNK}) {{
+    nodes {{
       id
       identifier
       title
       url
-      state { name type }
-      parent { identifier }
-      labels(first: 50) { nodes { name } }
-      children(first: 100) { nodes { identifier state { name type } } }
-      releases(first: 50, includeArchived: true) { nodes { id name url stage { type } } }
-    }
-  }
-}
+      state {{ name type }}
+      parent {{ identifier }}
+      labels(first: {_NESTED}) {{ {_LABEL_FIELDS} {_PAGE_INFO} }}
+      children(first: {_NESTED}) {{ {_CHILD_FIELDS} {_PAGE_INFO} }}
+      releases(first: {_NESTED}, includeArchived: true) {{ {_RELEASE_FIELDS} {_PAGE_INFO} }}
+    }}
+  }}
+}}
 """
+
+# The rest of one ticket's nested list, after the page FetchTickets returned.
+ISSUE_PAGE_GQL = {
+    "labels": f"""
+query IssueLabels($id: String!, $after: String) {{
+  issue(id: $id) {{ labels(first: {_PAGE}, after: $after) {{ {_LABEL_FIELDS} {_PAGE_INFO} }} }}
+}}
+""",
+    "children": f"""
+query IssueChildren($id: String!, $after: String) {{
+  issue(id: $id) {{ children(first: {_PAGE}, after: $after) {{ {_CHILD_FIELDS} {_PAGE_INFO} }} }}
+}}
+""",
+    "releases": f"""
+query IssueReleases($id: String!, $after: String) {{
+  issue(id: $id) {{ releases(first: {_PAGE}, after: $after, includeArchived: true) {{ {_RELEASE_FIELDS} {_PAGE_INFO} }} }}
+}}
+""",
+}
 
 STATE_IDS_GQL = """
 query StateIds($teamKey: String!) {
@@ -79,9 +110,15 @@ mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
 }
 """
 
-RELEASE_ISSUES_GQL = """
-query ReleaseIssues($id: String!) {
-  release(id: $id) { issues(first: 250) { nodes { id identifier } } }
+RELEASE_ISSUES_GQL = f"""
+query ReleaseIssues($id: String!, $after: String) {{
+  release(id: $id) {{ issues(first: 250, after: $after) {{ nodes {{ id identifier }} {_PAGE_INFO} }} }}
+}}
+"""
+
+RELEASE_STAGE_GQL = """
+query ReleaseStage($id: String!) {
+  release(id: $id) { stage { type } }
 }
 """
 
@@ -177,8 +214,22 @@ class LinearClient:
             data = self._run("FetchTickets", FETCH_TICKETS_GQL, {"teamKey": team_key, "numbers": chunk})
             for node in data["issues"]["nodes"]:
                 if node["identifier"] in wanted:
+                    for field in ISSUE_PAGE_GQL:
+                        self._read_to_end(node, field)
                     found[node["identifier"]] = _ticket(node)
         return found
+
+    def _read_to_end(self, node: dict, field: str) -> None:
+        """Append the rest of a ticket's nested list, so no label, child or release is decided on unseen."""
+        connection = node[field]
+        page_info = connection["pageInfo"]
+        while page_info["hasNextPage"]:
+            data = self._run(
+                f"FetchTickets.{field}", ISSUE_PAGE_GQL[field], {"id": node["id"], "after": page_info["endCursor"]},
+            )
+            page = data["issue"][field]
+            connection["nodes"].extend(page["nodes"])
+            page_info = page["pageInfo"]
 
     def state_ids(self, team_key: str) -> dict[str, str]:
         data = self._run("StateIds", STATE_IDS_GQL, {"teamKey": team_key})
@@ -261,9 +312,21 @@ class LinearClient:
         )
 
     def release_issues(self, release_id: str) -> dict[str, str]:
-        """The tickets attached to a release, by identifier, with their ids."""
-        data = self._run("ReleaseIssues", RELEASE_ISSUES_GQL, {"id": release_id})
-        return {node["identifier"]: node["id"] for node in data["release"]["issues"]["nodes"]}
+        """Every ticket attached to a release, by identifier, with its id, read page by page."""
+        attached: dict[str, str] = {}
+        after = None
+        while True:
+            data = self._run("ReleaseIssues", RELEASE_ISSUES_GQL, {"id": release_id, "after": after})
+            issues = data["release"]["issues"]
+            attached.update({node["identifier"]: node["id"] for node in issues["nodes"]})
+            if not issues["pageInfo"]["hasNextPage"]:
+                return attached
+            after = issues["pageInfo"]["endCursor"]
+
+    def release_completed(self, release_id: str) -> bool:
+        """Whether a person has moved the release to Released, read now rather than earlier in the run."""
+        data = self._run("ReleaseStage", RELEASE_STAGE_GQL, {"id": release_id})
+        return data["release"]["stage"]["type"] == "completed"
 
     def detach(self, issue_uuid: str, release_id: str) -> None:
         self._mutate(

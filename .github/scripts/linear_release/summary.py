@@ -38,7 +38,8 @@ def render(
             if release.removed:
                 verb = "Would remove" if ctx.dry_run else "Removed"
                 lines.append(f"\n{verb} from {release.name}: {', '.join(release.removed)} (no longer qualifies).")
-            if not release.tickets:
+            # A released release keeps what shipped whatever the plan says now.
+            if not release.tickets and not release.released:
                 lines.append(f"\n{release.name} has no tickets left. Cancel it in Linear.")
     else:
         lines.append("No release: no ticket qualified.")

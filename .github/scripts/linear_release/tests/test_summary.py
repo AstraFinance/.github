@@ -142,6 +142,18 @@ def test_summary_reports_removed_tickets_and_empty_releases():
     assert "Internal 2026.11.04 has no tickets left. Cancel it in Linear." in text
 
 
+def test_summary_never_asks_to_cancel_a_released_release():
+    """Given a released release for this deploy whose tickets no longer qualify in the current plan,
+    When the summary is rendered,
+    Then it is shown as released and nobody is told to cancel it."""
+    plan = _plan()
+    releases = (_release("astra", "Astra 2026.11.04.2", (), created=False, released=True),)
+    text = render(CTX, plan, _outcome(plan, releases=releases), [], [])
+
+    assert "| Released |" in text
+    assert "Cancel it in Linear" not in text
+
+
 def test_summary_warns_when_tickets_join_an_already_released_release():
     """Given a person already released this deploy's release before a re-run added tickets,
     When the summary is rendered,

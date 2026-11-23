@@ -9,7 +9,10 @@ STATES = {"Ready for Deployment": "s-ready", "Deployed": "s-deployed", "Done": "
 class FakeLinear:
     """An in-memory stand-in for LinearClient that logs every call in order."""
 
-    def __init__(self, existing_names=(), own=None, tickets=None, attached=None, comments=None, states=None):
+    def __init__(
+        self, existing_names=(), own=None, tickets=None, attached=None, comments=None, states=None,
+        completed=(),
+    ):
         self.tickets = {t.identifier: t for t in (tickets or ())}
         self.calls = []
         self.existing_names = list(existing_names)
@@ -19,6 +22,8 @@ class FakeLinear:
         # ticket uuid -> comment bodies already on that ticket
         self.comments = comments or {}
         self.states = STATES if states is None else states
+        # release ids a person has moved to Released by the time the run re-reads them
+        self.completed = set(completed)
         self.created = 0
 
     def _log(self, name, *args):
@@ -55,6 +60,10 @@ class FakeLinear:
 
     def attach(self, issue_uuid, release_id):
         self._log("attach", issue_uuid, release_id)
+
+    def release_completed(self, release_id):
+        self._log("release_completed", release_id)
+        return release_id in self.completed
 
     def detach(self, issue_uuid, release_id):
         self._log("detach", issue_uuid, release_id)

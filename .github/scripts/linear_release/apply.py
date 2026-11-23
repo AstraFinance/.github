@@ -142,13 +142,19 @@ def apply_plan(
         targets.append(_Target(audience, pipeline, name, ref, True, False))
 
     # A release a person has already released is the record of what shipped,
-    # so it is never trimmed; only open releases are corrected.
+    # so it is never trimmed; only open releases are corrected. Its stage is
+    # read again just before a trim, since a person may release it while this
+    # run is going. That narrows the window without closing it: Linear offers
+    # no way to make the read and the detach one step.
     for target in targets:
         if target.created or target.released:
             continue
         planned_ids = {t.identifier for t in plan.releases.get(target.audience, ())}
         attached = client.release_issues(target.ref.id)
         stale = sorted(identifier for identifier in attached if identifier not in planned_ids)
+        if stale and not ctx.dry_run and client.release_completed(target.ref.id):
+            target.released = True
+            continue
         target.removed = tuple(stale)
         if not ctx.dry_run:
             for identifier in stale:
