@@ -42,7 +42,8 @@ jobs:
     permissions:
       contents: read
     # One run per repository at a time, so two runs can't both create a release
-    # for the same day. Waiting runs queue in order: by default GitHub keeps one
+    # for the same day. Waiting runs all queue, in no guaranteed order, which is
+    # fine since each run handles its own tag: by default GitHub keeps one
     # pending run and cancels it when another arrives, so a deployed tag would
     # get no release.
     concurrency:
