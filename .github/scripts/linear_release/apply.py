@@ -145,7 +145,10 @@ def apply_plan(
     # so it is never trimmed; only open releases are corrected. Its stage is
     # read again just before a trim, since a person may release it while this
     # run is going. That narrows the window without closing it: Linear offers
-    # no way to make the read and the detach one step.
+    # no way to make the read and the detach one step. A release found released
+    # stops the run, because the plan sent its tickets to Deployed, and once
+    # Linear has moved a release's tickets to Done it does not move later ones;
+    # a re-run plans them to Done.
     for target in targets:
         if target.created or target.released:
             continue
@@ -153,8 +156,10 @@ def apply_plan(
         attached = client.release_issues(target.ref.id)
         stale = sorted(identifier for identifier in attached if identifier not in planned_ids)
         if stale and not ctx.dry_run and client.release_completed(target.ref.id):
-            target.released = True
-            continue
+            raise LinearError(
+                f"Release {target.name!r} was moved to Released while this run was going, so its tickets "
+                f"were planned to the wrong status. Run again."
+            )
         target.removed = tuple(stale)
         if not ctx.dry_run:
             for identifier in stale:

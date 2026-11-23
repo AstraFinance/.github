@@ -351,3 +351,47 @@ def test_release_completed_reads_the_stage_now(stage, completed):
     Then only the completed stage counts."""
     post = FakePost({"data": {"release": {"stage": {"type": stage}}}})
     assert LinearClient(API_KEY, post=post).release_completed("r1") is completed
+
+
+@pytest.mark.parametrize("cursor", [None, "c1"], ids=["missing", "unchanged"])
+def test_fetch_tickets_stops_when_a_nested_page_does_not_advance(cursor):
+    """Given a ticket's children whose next page says there is another page with no new cursor,
+    When tickets are fetched,
+    Then a LinearError stops the run instead of requesting the same page again."""
+    node = _issue_node(children={"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": "c1"}})
+    stuck = {"data": {"issue": {"children": {"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": cursor}}}}}
+    post = FakePost({"data": {"issues": {"nodes": [node]}}}, stuck)
+
+    with pytest.raises(LinearError, match="without a new cursor"):
+        LinearClient(API_KEY, post=post).fetch_tickets("ENG", ["ENG-2278"])
+    assert len(post.requests) == 2
+
+
+def test_fetch_tickets_stops_when_the_first_nested_page_has_no_cursor():
+    """Given a ticket whose labels say there is another page but give no cursor,
+    When tickets are fetched,
+    Then a LinearError stops the run before any follow-up request."""
+    node = _issue_node(labels={"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": None}})
+    post = FakePost({"data": {"issues": {"nodes": [node]}}})
+
+    with pytest.raises(LinearError, match="without a new cursor"):
+        LinearClient(API_KEY, post=post).fetch_tickets("ENG", ["ENG-2278"])
+    assert len(post.requests) == 1
+
+
+@pytest.mark.parametrize("cursor", [None, "p1"], ids=["missing", "unchanged"])
+def test_release_issues_stops_when_a_page_does_not_advance(cursor):
+    """Given a release whose second page of tickets says there is another page with no new cursor,
+    When its tickets are read,
+    Then a LinearError stops the run instead of requesting the same page again."""
+    first = {"data": {"release": {"issues": {
+        "nodes": [{"id": "uuid-1", "identifier": "ENG-1"}], "pageInfo": {"hasNextPage": True, "endCursor": "p1"},
+    }}}}
+    stuck = {"data": {"release": {"issues": {
+        "nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": cursor},
+    }}}}
+    post = FakePost(first, stuck)
+
+    with pytest.raises(LinearError, match="without a new cursor"):
+        LinearClient(API_KEY, post=post).release_issues("r1")
+    assert len(post.requests) == 2

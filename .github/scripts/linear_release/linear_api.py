@@ -174,6 +174,14 @@ def _urllib_post(body: str, headers: dict[str, str], attempts: int = 3) -> dict:
     raise LinearError("could not reach Linear")
 
 
+def _next_cursor(operation: str, page_info: dict, current: str | None) -> str:
+    """The cursor for the next page; raises when it would not advance, so a pagination loop cannot spin forever."""
+    cursor = page_info.get("endCursor")
+    if not cursor or cursor == current:
+        raise LinearError(f"{operation}: Linear reported another page without a new cursor")
+    return cursor
+
+
 def _number(identifier: str) -> float:
     return float(identifier.rsplit("-", 1)[1])
 
@@ -221,12 +229,13 @@ class LinearClient:
 
     def _read_to_end(self, node: dict, field: str) -> None:
         """Append the rest of a ticket's nested list, so no label, child or release is decided on unseen."""
+        operation = f"FetchTickets.{field}"
         connection = node[field]
         page_info = connection["pageInfo"]
+        after = None
         while page_info["hasNextPage"]:
-            data = self._run(
-                f"FetchTickets.{field}", ISSUE_PAGE_GQL[field], {"id": node["id"], "after": page_info["endCursor"]},
-            )
+            after = _next_cursor(operation, page_info, after)
+            data = self._run(operation, ISSUE_PAGE_GQL[field], {"id": node["id"], "after": after})
             page = data["issue"][field]
             connection["nodes"].extend(page["nodes"])
             page_info = page["pageInfo"]
@@ -321,7 +330,7 @@ class LinearClient:
             attached.update({node["identifier"]: node["id"] for node in issues["nodes"]})
             if not issues["pageInfo"]["hasNextPage"]:
                 return attached
-            after = issues["pageInfo"]["endCursor"]
+            after = _next_cursor("ReleaseIssues", issues["pageInfo"], after)
 
     def release_completed(self, release_id: str) -> bool:
         """Whether a person has moved the release to Released, read now rather than earlier in the run."""

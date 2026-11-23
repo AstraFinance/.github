@@ -162,19 +162,24 @@ def test_rerun_empties_a_release_when_nothing_qualifies_any_more():
     assert outcome.releases[0].removed == ("ENG-3",)
 
 
-def test_rerun_leaves_a_release_alone_once_a_person_has_released_it():
-    """Given an open release still holding ENG-3, now gated, which a person releases while the run is going,
+def test_rerun_stops_when_a_person_releases_the_release_during_the_run():
+    """Given an open release holding ENG-3, now gated, and ENG-2, planned to Deployed, which a person releases
+        while the run is going,
     When the run reaches the trim,
-    Then the release's stage is read again, nothing is detached, and the release is reported as released."""
+    Then the release's stage is read again and the run stops, asking for a re-run, before anything is detached,
+        attached or moved, since its tickets were planned to Deployed and Linear will not move them to Done."""
     own_ref = ReleaseRef("own-5", "Astra 2026.11.13", "u")
     fake = FakeLinear(attached={"own-5": {"ENG-1": "uuid-ENG-1", "ENG-3": "uuid-ENG-3"}}, completed={"own-5"})
     plan = _plan(ticket("ENG-1", "immediate", "bug", release_ids=frozenset({"own-5"})),
+                 ticket("ENG-2", "immediate", "bug"),
                  ticket("ENG-3", "gated", "story", release_ids=frozenset({"own-5"})))
+    assert ("ENG-2", "Deployed") in {(m.ticket.identifier, m.to_state) for m in plan.moves}
 
-    outcome = apply_plan(plan, fake, CFG, CTX, own={"astra": (own_ref, False)})
+    with pytest.raises(LinearError, match="moved to Released while this run was going"):
+        apply_plan(plan, fake, CFG, CTX, own={"astra": (own_ref, False)})
 
-    assert (fake.args_of("release_completed"), fake.args_of("detach")) == ([("own-5",)], [])
-    assert (outcome.releases[0].released, outcome.releases[0].removed) == (True, ())
+    assert fake.args_of("release_completed") == [("own-5",)]
+    assert [name for name in fake.names() if name in {"detach", "attach", "set_state"}] == []
 
 
 def test_flagged_ticket_gets_a_comment_with_what_to_do():
